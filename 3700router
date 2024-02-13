@@ -121,11 +121,11 @@ class Router:
             msg_send['src'] = self.our_addr(k)
             msg_send['dst'] = k
             msg_send['msg']['ASPath'].insert(0, self.asn)
-            if msg_send['msg']['localpref']:
+            if 'localpref' in msg_send['msg']:
                 del msg_send['msg']['localpref']
-            if msg_send['msg']['origin']:
+            if 'origin' in msg_send['msg']:
                 del msg_send['msg']['origin']
-            if msg_send['msg']['selfOrigin']:
+            if 'selfOrigin' in msg_send['msg']:
                 del msg_send['msg']['selfOrigin']
 
             # Change from object to string
