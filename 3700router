@@ -1,0 +1,180 @@
+#!/usr/bin/env -S python3 -u
+
+import argparse, socket, time, json, select, struct, sys, math
+
+# Message Types
+UPDT = "update"
+DATA = "data"
+DUMP = "dump"
+
+class Router:
+
+    relations = {}
+    sockets = {}
+    ports = {}
+    ftab = []
+    history = []
+
+    def __init__(self, asn, connections):
+        print("Router at AS %s starting up" % asn)
+        self.asn = asn
+        for relationship in connections:
+            port, neighbor, relation = relationship.split("-")
+            print(self.sockets)
+
+            self.sockets[neighbor] = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.sockets[neighbor].bind(('localhost', 0))
+            self.ports[neighbor] = int(port)
+            self.relations[neighbor] = relation
+            self.send(neighbor, json.dumps({ "type": "handshake", "src": self.our_addr(neighbor), "dst": neighbor, "msg": {}  }))
+        
+    def our_addr(self, dst):
+        quads = list(int(qdn) for qdn in dst.split('.'))
+        quads[3] = 1
+        return "%d.%d.%d.%d" % (quads[0], quads[1], quads[2], quads[3])
+
+    def send(self, network, message):
+        self.sockets[network].sendto(message.encode('utf-8'), ('localhost', self.ports[network]))
+
+    # Function handling "dump" type message
+    def dump(self, message):
+        msg_json = json.loads(message)
+
+        msg = {}
+        msg['src'] = msg_json['dst']
+        msg['dst'] = msg_json['src']
+        msg['type'] = 'table'
+        msg['msg'] = self.ftab
+
+        msg_string = json.dumps(msg)
+
+        self.send(msg['dst'], msg_string)
+
+    # Find similar networks
+    def similar_networks(self, network1, network2):
+        network1_split = network1.split('.')
+        network2_split = network2.split('.')
+        return network1_split[0] == network2_split[0]
+    
+    # Find possible routes
+    def find_routes(self, destination_address):
+        routes = []
+        for network in self.ftab:
+            if self.similar_networks(network['network'], destination_address):
+                routes.append(network['peer'])
+        return routes
+    
+    # Get the highest prefix route
+    def get_highest_prefix(self, destination_address, routes):
+        pass
+
+    # Function handling "data" type message
+    def data(self, message):
+        msg = json.loads(message)
+
+        # Find possible routes
+        routes = self.find_routes(msg['dst'])
+        route = routes[0]
+
+        if route:
+            self.send(route, message)
+        else:
+            # Send no route message
+            no_route_msg = {
+                'type': 'no route',
+                'msg': {},
+                'dst': msg['src'],
+                'src': self.our_addr(msg['src'])
+            }
+
+            self.send(msg['src'], json.dumps(no_route_msg))
+    
+    # Update ftab
+    def update_ftab(self, msg):
+        ftab_dict = {
+            'network': msg['msg']['network'],
+            'netmask': msg['msg']['netmask'],
+            'peer': msg['src'],
+            'localpref': msg['msg']['localpref'],
+            'ASPath': msg['msg']['ASPath'],
+            'selfOrigin': msg['msg']['selfOrigin'],
+            'origin': msg['msg']['origin']
+        }
+
+        self.ftab.append(ftab_dict)
+
+    # Function handling "update" type message
+    def update(self, message):
+        msg = json.loads(message)
+        msg_send = json.loads(message)
+        src = msg_send['src']
+
+        # Update Fowarding Table
+        self.update_ftab(msg)
+
+        # Send route announcement to all sockets
+        for k in self.sockets.keys():
+            if k == src:
+                continue
+            
+            # Reformat message
+            msg_send['src'] = self.our_addr(k)
+            msg_send['dst'] = k
+            msg_send['msg']['ASPath'].insert(0, self.asn)
+            if msg_send['msg']['localpref']:
+                del msg_send['msg']['localpref']
+            if msg_send['msg']['origin']:
+                del msg_send['msg']['origin']
+            if msg_send['msg']['selfOrigin']:
+                del msg_send['msg']['selfOrigin']
+
+            # Change from object to string
+            msg_string = json.dumps(msg_send)
+
+            # Testing
+            #print(msg_string.encode())
+
+            self.send(k, msg_string)
+
+    # Determines which function to use per message type
+    def handle_message(self, message):
+        msg_json = json.loads(message)
+        t = msg_json['type']
+
+        # Handles 'update' message type
+        if t == UPDT:
+            return self.update(message)
+        elif t == DATA:
+            return self.data(message)
+        elif t == DUMP:
+            return self.dump(message)
+
+    def run(self):
+        while True:
+            socks = select.select(self.sockets.values(), [], [], 0.1)[0]
+            for conn in socks:
+                k, addr = conn.recvfrom(65535)
+                srcif = None
+                for sock in self.sockets:
+                    if self.sockets[sock] == conn:
+                        srcif = sock
+                        break
+                msg = k.decode('utf-8')
+
+                # Saves every message
+                msg_object = json.loads(msg)
+                self.history.append(msg_object)
+
+                # Handles the message received
+                self.handle_message(msg)
+
+                print("Received message '%s' from %s" % (msg, srcif))
+        return
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='route packets')
+    parser.add_argument('asn', type=int, help="AS number of this router")
+    parser.add_argument('connections', metavar='connections', type=str, nargs='+', help="connections")
+    args = parser.parse_args()
+    router = Router(args.asn, args.connections)
+    router.run()
